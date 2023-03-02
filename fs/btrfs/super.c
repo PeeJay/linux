@@ -427,6 +427,7 @@ enum {
 	Opt_thread_pool,
 	Opt_treelog, Opt_notreelog,
 	Opt_user_subvol_rm_allowed,
+	Opt_allocation_hint,
 
 	/* Rescue options */
 	Opt_rescue,
@@ -500,6 +501,7 @@ static const match_table_t tokens = {
 	{Opt_treelog, "treelog"},
 	{Opt_notreelog, "notreelog"},
 	{Opt_user_subvol_rm_allowed, "user_subvol_rm_allowed"},
+	{Opt_allocation_hint, "allocation_hint=%d"},
 
 	/* Rescue options */
 	{Opt_rescue, "rescue=%s"},
@@ -989,6 +991,19 @@ int btrfs_parse_options(struct btrfs_fs_info *info, char *options,
 			break;
 		case Opt_user_subvol_rm_allowed:
 			btrfs_set_opt(info->mount_opt, USER_SUBVOL_RM_ALLOWED);
+			break;
+		case Opt_allocation_hint:
+			ret = match_int(&args[0], &intarg);
+			if (ret || (intarg != 1 && intarg != 0)) {
+				btrfs_err(info, "invalid allocation_hint= parameter\n");
+				ret = -EINVAL;
+				goto out;
+			}
+			if (intarg)
+				btrfs_info(info, "allocation_hint enabled");
+			else
+				btrfs_info(info, "allocation_hint disabled");
+			info->allocation_hint_mode = intarg;
 			break;
 		case Opt_enospc_debug:
 			btrfs_set_opt(info->mount_opt, ENOSPC_DEBUG);
@@ -1598,6 +1613,8 @@ static int btrfs_show_options(struct seq_file *seq, struct dentry *dentry)
 		seq_puts(seq, ",clear_cache");
 	if (btrfs_test_opt(info, USER_SUBVOL_RM_ALLOWED))
 		seq_puts(seq, ",user_subvol_rm_allowed");
+	if (info->allocation_hint_mode)
+		seq_puts(seq, ",allocation_hint=1");
 	if (btrfs_test_opt(info, ENOSPC_DEBUG))
 		seq_puts(seq, ",enospc_debug");
 	if (btrfs_test_opt(info, AUTO_DEFRAG))
