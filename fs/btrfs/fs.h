@@ -32,6 +32,13 @@ static_assert(sizeof(struct btrfs_super_block) == BTRFS_SUPER_INFO_SIZE);
 /*
  * Runtime (in-memory) states of filesystem
  */
+
+/* allocation_hint mode */
+enum btrfs_allocation_hint_modes {
+	BTRFS_ALLOCATION_HINT_DISABLED,
+	BTRFS_ALLOCATION_HINT_ENABLED
+};
+
 enum {
 	/* Global indicator of serious filesystem errors */
 	BTRFS_FS_STATE_ERROR,
@@ -350,6 +357,9 @@ struct btrfs_commit_stats {
 };
 
 struct btrfs_fs_info {
+	/* allocation_hint mode */
+	int allocation_hint_mode;
+
 	u8 chunk_tree_uuid[BTRFS_UUID_SIZE];
 	unsigned long flags;
 	struct btrfs_root *tree_root;

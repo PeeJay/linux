@@ -174,6 +174,16 @@ enum btrfs_raid_types __attribute_const__ btrfs_bg_flags_to_raid_index(u64 flags
 	return BTRFS_BG_FLAG_TO_INDEX(profile);
 }
 
+#define BTRFS_DEV_ALLOCATION_HINT_COUNT (1ULL << \
+		BTRFS_DEV_ALLOCATION_HINT_BIT_COUNT)
+
+static const char alloc_hint_map[BTRFS_DEV_ALLOCATION_HINT_COUNT] = {
+	[BTRFS_DEV_ALLOCATION_HINT_DATA_ONLY] = -1,
+	[BTRFS_DEV_ALLOCATION_HINT_PREFERRED_DATA] = 0,
+	[BTRFS_DEV_ALLOCATION_HINT_PREFERRED_METADATA] = 1,
+	[BTRFS_DEV_ALLOCATION_HINT_METADATA_ONLY] = 2,
+};
+
 const char *btrfs_bg_type_to_raid_name(u64 flags)
 {
 	const int index = btrfs_bg_flags_to_raid_index(flags);
@@ -1866,7 +1876,7 @@ static int btrfs_add_dev_item(struct btrfs_trans_handle *trans,
 
 	btrfs_set_device_id(leaf, dev_item, device->devid);
 	btrfs_set_device_generation(leaf, dev_item, 0);
-	btrfs_set_device_type(leaf, dev_item, device->type);
+	btrfs_set_device_flags(leaf, dev_item, device->flags);
 	btrfs_set_device_io_align(leaf, dev_item, device->io_align);
 	btrfs_set_device_io_width(leaf, dev_item, device->io_width);
 	btrfs_set_device_sector_size(leaf, dev_item, device->sector_size);
@@ -2848,7 +2858,7 @@ error:
 	return ret;
 }
 
-static noinline int btrfs_update_device(struct btrfs_trans_handle *trans,
+noinline int btrfs_update_device(struct btrfs_trans_handle *trans,
 					struct btrfs_device *device)
 {
 	int ret;
@@ -2879,7 +2889,7 @@ static noinline int btrfs_update_device(struct btrfs_trans_handle *trans,
 	dev_item = btrfs_item_ptr(leaf, path->slots[0], struct btrfs_dev_item);
 
 	btrfs_set_device_id(leaf, dev_item, device->devid);
-	btrfs_set_device_type(leaf, dev_item, device->type);
+	btrfs_set_device_flags(leaf, dev_item, device->flags);
 	btrfs_set_device_io_align(leaf, dev_item, device->io_align);
 	btrfs_set_device_io_width(leaf, dev_item, device->io_width);
 	btrfs_set_device_sector_size(leaf, dev_item, device->sector_size);
@@ -5026,13 +5036,18 @@ static int btrfs_add_system_chunk(struct btrfs_fs_info *fs_info,
 }
 
 /*
- * sort the devices in descending order by max_avail, total_avail
+ * sort the devices in descending order by alloc_hint,
+ * max_avail, total_avail
  */
 static int btrfs_cmp_device_info(const void *a, const void *b)
 {
 	const struct btrfs_device_info *di_a = a;
 	const struct btrfs_device_info *di_b = b;
 
+	if (di_a->alloc_hint > di_b->alloc_hint)
+		return -1;
+	if (di_a->alloc_hint < di_b->alloc_hint)
+		return 1;
 	if (di_a->max_avail > di_b->max_avail)
 		return -1;
 	if (di_a->max_avail < di_b->max_avail)
@@ -5185,6 +5200,8 @@ static int gather_device_info(struct btrfs_fs_devices *fs_devices,
 	int ndevs = 0;
 	u64 max_avail;
 	u64 dev_offset;
+	int hint;
+	int i;
 
 	/*
 	 * in the first pass through the devices list, we gather information
@@ -5237,13 +5254,91 @@ static int gather_device_info(struct btrfs_fs_devices *fs_devices,
 		devices_info[ndevs].max_avail = max_avail;
 		devices_info[ndevs].total_avail = total_avail;
 		devices_info[ndevs].dev = device;
+
+		if (((ctl->type & BTRFS_BLOCK_GROUP_DATA) &&
+		     (ctl->type & BTRFS_BLOCK_GROUP_METADATA)) ||
+		    info->allocation_hint_mode ==
+		     BTRFS_ALLOCATION_HINT_DISABLED) {
+			/*
+			 * if mixed bg or the allocator hint is
+			 * disabled, set all the alloc_hint
+			 * fields to the same value, so the sorting
+			 * is not affected
+			 */
+			devices_info[ndevs].alloc_hint = 0;
+		} else if (ctl->type & BTRFS_BLOCK_GROUP_DATA) {
+			hint = device->flags & BTRFS_DEV_ALLOCATION_HINT_MASK;
+
+			/*
+			 * skip BTRFS_DEV_METADATA_ONLY disks
+			 */
+			if (hint == BTRFS_DEV_ALLOCATION_HINT_METADATA_ONLY)
+				continue;
+			/*
+			 * if a data chunk must be allocated,
+			 * sort also by hint (data disk
+			 * higher priority)
+			 */
+			devices_info[ndevs].alloc_hint = -alloc_hint_map[hint];
+		} else { /* BTRFS_BLOCK_GROUP_METADATA */
+			hint = device->flags & BTRFS_DEV_ALLOCATION_HINT_MASK;
+
+			/*
+			 * skip BTRFS_DEV_DATA_ONLY disks
+			 */
+			if (hint == BTRFS_DEV_ALLOCATION_HINT_DATA_ONLY)
+				continue;
+			/*
+			 * if a data chunk must be allocated,
+			 * sort also by hint (metadata hint
+			 * higher priority)
+			 */
+			devices_info[ndevs].alloc_hint = alloc_hint_map[hint];
+		}
+
 		++ndevs;
 	}
 	ctl->ndevs = ndevs;
 
 	/*
+	 * no devices available
+	 */
+	if (!ndevs)
+		return 0;
+
+	/*
 	 * now sort the devices by hole size / available space
 	 */
+	sort(devices_info, ndevs, sizeof(struct btrfs_device_info),
+	     btrfs_cmp_device_info, NULL);
+
+	/*
+	 * select the minimum set of disks grouped by hint that
+	 * can host the chunk
+	 */
+	ndevs = 0;
+	while (ndevs < ctl->ndevs) {
+		hint = devices_info[ndevs++].alloc_hint;
+		while (ndevs < ctl->ndevs &&
+		       devices_info[ndevs].alloc_hint == hint)
+				ndevs++;
+		if (ndevs >= ctl->devs_min)
+			break;
+	}
+
+	BUG_ON(ndevs > ctl->ndevs);
+	ctl->ndevs = ndevs;
+
+	/*
+	 * the next layers require the devices_info ordered by
+	 * max_avail. If we are returing two (or more) different
+	 * group of alloc_hint, this is not always true. So sort
+	 * these gain.
+	 */
+
+	for (i = 0 ; i < ndevs ; i++)
+		devices_info[i].alloc_hint = 0;
+
 	sort(devices_info, ndevs, sizeof(struct btrfs_device_info),
 	     btrfs_cmp_device_info, NULL);
 
@@ -7038,7 +7133,7 @@ static void fill_device_from_item(struct extent_buffer *leaf,
 	device->commit_total_bytes = device->disk_total_bytes;
 	device->bytes_used = btrfs_device_bytes_used(leaf, dev_item);
 	device->commit_bytes_used = device->bytes_used;
-	device->type = btrfs_device_type(leaf, dev_item);
+	device->flags = btrfs_device_flags(leaf, dev_item);
 	device->io_align = btrfs_device_io_align(leaf, dev_item);
 	device->io_width = btrfs_device_io_width(leaf, dev_item);
 	device->sector_size = btrfs_device_sector_size(leaf, dev_item);
