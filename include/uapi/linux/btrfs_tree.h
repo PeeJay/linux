@@ -578,6 +578,22 @@ struct btrfs_node {
 	struct btrfs_key_ptr ptrs[];
 } __attribute__ ((__packed__));
 
+/* dev_item.type */
+
+/* btrfs chunk allocation hint */
+#define BTRFS_DEV_ALLOCATION_HINT_BIT_COUNT	2
+/* btrfs chunk allocation hint mask */
+#define BTRFS_DEV_ALLOCATION_HINT_MASK	\
+	((1 << BTRFS_DEV_ALLOCATION_HINT_BIT_COUNT) -1)
+/* preferred data chunk, but metadata chunk allowed */
+#define BTRFS_DEV_ALLOCATION_HINT_PREFERRED_DATA	(0ULL)
+/* preferred metadata chunk, but data chunk allowed */
+#define BTRFS_DEV_ALLOCATION_HINT_PREFERRED_METADATA	(1ULL)
+/* only metadata chunk are allowed */
+#define BTRFS_DEV_ALLOCATION_HINT_METADATA_ONLY		(2ULL)
+/* only data chunk allowed */
+#define BTRFS_DEV_ALLOCATION_HINT_DATA_ONLY		(3ULL)
+
 struct btrfs_dev_item {
 	/* the internal btrfs device id */
 	__le64 devid;

@@ -87,6 +87,8 @@ struct btrfs_fs_context {
 	unsigned long compress_type:4;
 	unsigned int compress_level;
 	refcount_t refs;
+	
+	u32 allocation_hint_mode;
 };
 
 enum {
@@ -121,6 +123,7 @@ enum {
 	Opt_thread_pool,
 	Opt_treelog,
 	Opt_user_subvol_rm_allowed,
+	Opt_allocation_hint,
 
 	/* Rescue options */
 	Opt_rescue,
@@ -240,6 +243,8 @@ static const struct fs_parameter_spec btrfs_fs_parameters[] = {
 	fsparam_u32("thread_pool", Opt_thread_pool),
 	fsparam_flag_no("treelog", Opt_treelog),
 	fsparam_flag("user_subvol_rm_allowed", Opt_user_subvol_rm_allowed),
+
+	fsparam_u32("allocation_hint", Opt_allocation_hint),
 
 	/* Rescue options. */
 	fsparam_enum("rescue", Opt_rescue, btrfs_parameter_rescue),
@@ -511,6 +516,15 @@ static int btrfs_parse_param(struct fs_context *fc, struct fs_parameter *param)
 	case Opt_user_subvol_rm_allowed:
 		btrfs_set_opt(ctx->mount_opt, USER_SUBVOL_RM_ALLOWED);
 		break;
+		
+	case Opt_allocation_hint:
+		if (result.uint_32 == 1)
+			btrfs_info(NULL, "allocation_hint enabled");
+		else
+			btrfs_info(NULL, "allocation_hint disabled");
+		ctx->allocation_hint_mode = result.uint_32;
+		break;
+	
 	case Opt_enospc_debug:
 		if (result.negated)
 			btrfs_clear_opt(ctx->mount_opt, ENOSPC_DEBUG);
@@ -1079,6 +1093,8 @@ static int btrfs_show_options(struct seq_file *seq, struct dentry *dentry)
 		seq_puts(seq, ",clear_cache");
 	if (btrfs_test_opt(info, USER_SUBVOL_RM_ALLOWED))
 		seq_puts(seq, ",user_subvol_rm_allowed");
+	if (info->allocation_hint_mode)
+		seq_puts(seq, ",allocation_hint=1");
 	if (btrfs_test_opt(info, ENOSPC_DEBUG))
 		seq_puts(seq, ",enospc_debug");
 	if (btrfs_test_opt(info, AUTO_DEFRAG))
@@ -1366,6 +1382,8 @@ static void btrfs_ctx_to_info(struct btrfs_fs_info *fs_info, struct btrfs_fs_con
 	fs_info->mount_opt = ctx->mount_opt;
 	fs_info->compress_type = ctx->compress_type;
 	fs_info->compress_level = ctx->compress_level;
+	
+	fs_info->allocation_hint_mode = ctx->allocation_hint_mode;
 }
 
 static void btrfs_info_to_ctx(struct btrfs_fs_info *fs_info, struct btrfs_fs_context *ctx)
@@ -1377,6 +1395,8 @@ static void btrfs_info_to_ctx(struct btrfs_fs_info *fs_info, struct btrfs_fs_con
 	ctx->mount_opt = fs_info->mount_opt;
 	ctx->compress_type = fs_info->compress_type;
 	ctx->compress_level = fs_info->compress_level;
+	
+	ctx->allocation_hint_mode = fs_info->allocation_hint_mode;
 }
 
 #define btrfs_info_if_set(fs_info, old_ctx, opt, fmt, args...)			\
